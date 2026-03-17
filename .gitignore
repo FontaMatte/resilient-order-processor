@@ -1,0 +1,21 @@
+# Dipendenze installate da Composer.
+# Non vanno nel repo: chiunque clona il progetto fa "composer install"
+# e Composer scarica le versioni esatte dal file composer.lock.
+/vendor/
+
+# File di ambiente con credenziali reali.
+# .env.example va nel repo (template), .env no (contiene secrets).
+.env
+
+# File di sistema operativo
+.DS_Store
+Thumbs.db
+
+# IDE e editor
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Log applicativi
+*.log

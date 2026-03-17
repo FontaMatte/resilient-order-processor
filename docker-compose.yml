@@ -1,0 +1,116 @@
+# docker-compose.yml
+#
+# Questo file descrive tutti i servizi del nostro sistema.
+# Quando lanci "docker compose up", Docker:
+# 1. Legge questo file
+# 2. Crea una rete virtuale dove i servizi possono comunicare
+# 3. Avvia ogni servizio nel suo container isolato
+#
+# I servizi si parlano usando i NOMI come hostname.
+# Es: dal container "app", puoi raggiungere PostgreSQL con l'host "db"
+# (non "localhost", perché ogni container ha il suo "localhost").
+
+services:
+
+  # === IL NOSTRO BACKEND PHP ===
+  app:
+    # "build" dice a Docker: "non scaricare un'immagine, costruiscila dal Dockerfile"
+    build:
+      context: .                          # Il contesto è la root del progetto
+      dockerfile: docker/php/Dockerfile   # Percorso al Dockerfile
+    
+    # Mappa la porta: HOST:CONTAINER
+    # Quando vai su http://localhost:8080, Docker inoltra al container sulla porta 8080
+    ports:
+      - "8080:8080"
+    
+    # VOLUME: monta la cartella del progetto dentro il container.
+    # Questo significa che quando modifichi un file PHP sul tuo PC,
+    # la modifica è ISTANTANEA dentro il container. Senza questo,
+    # dovresti ricostruire l'immagine ad ogni modifica.
+    volumes:
+      - .:/app
+    
+    # depends_on: avvia db e rabbitmq PRIMA di app.
+    # ATTENZIONE: "prima" significa solo che il container parte prima,
+    # NON che il servizio è pronto. PostgreSQL potrebbe ancora star
+    # inizializzando quando l'app prova a connettersi.
+    # Lo gestiremo più avanti con retry nella connessione.
+    depends_on:
+      db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    
+    # Variabili d'ambiente: la configurazione del nostro sistema.
+    # L'app le legge con getenv('DB_HOST') in PHP.
+    # Questo è il pattern "12-Factor App": la configurazione sta
+    # nell'ambiente, NON nel codice. Così lo stesso codice gira
+    # in sviluppo, staging e produzione cambiando solo queste variabili.
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: orders
+      DB_USER: app
+      DB_PASSWORD: secret
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USER: guest
+      RABBITMQ_PASSWORD: guest
+
+  # === IL DATABASE POSTGRESQL ===
+  db:
+    # Usiamo l'immagine ufficiale. "16" è la versione, "alpine" è una
+    # distribuzione Linux ultra-leggera (~5MB vs ~100MB di Debian).
+    # Meno roba = meno superficie d'attacco, download più veloce.
+    image: postgres:16-alpine
+    
+    # Porta esposta anche sull'host, così puoi connetterti con un client
+    # tipo DBeaver, pgAdmin, o anche psql da terminale per ispezionare i dati.
+    ports:
+      - "5432:5432"
+    
+    environment:
+      POSTGRES_DB: orders       # Crea automaticamente questo database all'avvio
+      POSTGRES_USER: app        # Crea questo utente (non usare "root" in prod!)
+      POSTGRES_PASSWORD: secret # Password dell'utente
+    
+    # VOLUME NAMED: "pgdata" è un volume gestito da Docker.
+    # Senza questo, ogni volta che fai "docker compose down" PERDI tutti i dati.
+    # Col volume, i dati persistono anche se distruggi e ricrei il container.
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    
+    # Healthcheck: Docker controlla periodicamente se PostgreSQL è davvero pronto.
+    # pg_isready è un tool incluso in PostgreSQL che verifica la connettività.
+    # Questo è quello che permette a depends_on + condition: service_healthy di funzionare.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d orders"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # === IL MESSAGE BROKER RABBITMQ ===
+  rabbitmq:
+    # "management" include un pannello web per vedere code e messaggi.
+    # Utilissimo in sviluppo per capire cosa sta succedendo.
+    image: rabbitmq:3-management-alpine
+    
+    ports:
+      - "5672:5672"     # Porta AMQP (il protocollo di messaggistica)
+      - "15672:15672"   # Porta del pannello web di gestione
+    
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+
+# Definizione dei volumi named.
+# Docker li gestisce automaticamente, li trovi con "docker volume ls".
+volumes:
+  pgdata:
