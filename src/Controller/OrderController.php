@@ -8,6 +8,9 @@ use App\Service\Database;
 use PDO;
 use Psr\Http\Message\ResponseInterface as Response;
 use Psr\Http\Message\ServerRequestInterface as Request;
+use App\Service\ExternalAvailabilityService;
+use App\Service\ExternalServiceException;
+use App\Service\RetryService;
 
 class OrderController
 {
@@ -44,6 +47,28 @@ class OrderController
 
         if ($product === false) {
             return $this->jsonError($response, "Product with id {$productId} not found", 404);
+        }
+
+        // === STEP 3: Verifica disponibilità con servizio esterno + retry ===
+        $availabilityService = new ExternalAvailabilityService(failureRate: 0.3);
+        $retryService = new RetryService(maxAttempts: 3, baseDelayMs: 200);
+
+        try {
+            $availability = $retryService->execute(
+                operation: fn() => $availabilityService->checkAvailability($productId, $quantity),
+                operationName: 'availability_check'
+            );
+
+            if (!$availability['available']) {
+                return $this->jsonError($response, 'Product not available in requested quantity', 409);
+            }
+            
+        } catch (ExternalServiceException $e) {
+            return $this->jsonError(
+                $response,
+                'Unable to verify product availability. Please try again later.',
+                503
+            );
         }
 
         $totalPrice = bcmul((string) $product['price'], (string) $quantity, 2);
