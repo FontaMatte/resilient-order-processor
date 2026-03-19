@@ -8,14 +8,13 @@ use Slim\Factory\AppFactory;
 use Psr\Http\Message\ResponseInterface as Response;
 use Psr\Http\Message\ServerRequestInterface as Request;
 use App\Service\Database;
+use App\Controller\OrderController;
 
 $app = AppFactory::create();
 $app->addErrorMiddleware(true, true, true);
 $app->addBodyParsingMiddleware();
 
-// ============================================================
-// ROUTE: HEALTH CHECK
-// ============================================================
+// Health check
 $app->get('/health', function (Request $request, Response $response): Response {
     $dbHealthy = Database::isHealthy();
     $allHealthy = $dbHealthy;
@@ -38,9 +37,7 @@ $app->get('/health', function (Request $request, Response $response): Response {
         ->withStatus($statusCode);
 });
 
-// ============================================================
-// ROUTE: LISTA PRODOTTI
-// ============================================================
+// Lista prodotti
 $app->get('/products', function (Request $request, Response $response): Response {
     $pdo = Database::getConnection();
     $stmt = $pdo->prepare('SELECT id, name, price, stock FROM products ORDER BY id');
@@ -53,5 +50,8 @@ $app->get('/products', function (Request $request, Response $response): Response
         ->withHeader('Content-Type', 'application/json')
         ->withStatus(200);
 });
+
+// Crea ordine
+$app->post('/orders', [new OrderController(), 'create']);
 
 $app->run();
