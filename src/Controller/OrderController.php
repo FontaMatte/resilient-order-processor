@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Controller;
 
 use App\Service\Database;
+use App\Service\InventoryService;
 use PDO;
 use Psr\Http\Message\ResponseInterface as Response;
 use Psr\Http\Message\ServerRequestInterface as Request;
@@ -71,6 +72,14 @@ class OrderController
             );
         }
 
+        // === STEP 4: Riserva lo stock in modo atomico ===
+        $inventoryService = new InventoryService($pdo);
+        $reservation = $inventoryService->reserveStock($productId, $quantity);
+
+        if (!$reservation['success']) {
+            return $this->jsonError($response, $reservation['error'], 409);
+        }
+
         $totalPrice = bcmul((string) $product['price'], (string) $quantity, 2);
 
         $stmt = $pdo->prepare(
@@ -78,7 +87,7 @@ class OrderController
              VALUES (?, ?, ?, ?)
              RETURNING *'
         );
-        $stmt->execute([$productId, $quantity, $totalPrice, 'pending']);
+        $stmt->execute([$productId, $quantity, $totalPrice, 'confirmed']);
         $order = $stmt->fetch();
 
         $responseData = [
