@@ -13,15 +13,16 @@ class InventoryService
     {}
 
     /**
-     * Riserva una quantità di prodotto scalando lo stock in modo atomico.
+     * Riserva lo stock, crea l'ordine, e scrive nell'outbox.
+     * Tutto in un'unica transazione atomica.
      *
-     * "Atomico" significa: o l'intera operazione riesce, o non succede niente.
-     * Non può succedere che lo stock venga letto ma non aggiornato,
-     * o aggiornato a metà. È tutto-o-niente.
-     *
-     * @return array{success: bool, product: array, remaining_stock: int, error?: string}
+     * @return array{success: bool, order?: array, error?: string}
      */
-    public function reserveStock(int $productId, int $quantity): array
+    public function reserveAndCreateOrder(
+        int $productId, 
+        int $quantity,
+        string $totalPrice
+    ): array
     {
         try {
             // BEGIN: apri la transazione.
@@ -52,7 +53,7 @@ class InventoryService
                 ];
             }
 
-            // Verifica lo stock: c'è abbastanza?
+            // Verifica lo stock
             if ((int) $product['stock'] < $quantity) {
                 $this->pdo->rollBack();
                 return [
@@ -61,8 +62,7 @@ class InventoryService
                         'Insufficient stock: requested %d, available %d',
                         $quantity,
                         $product['stock']
-                    ),
-                    'available_stock' => (int) $product['stock'],
+                    )
                 ];
             }
 
@@ -77,14 +77,47 @@ class InventoryService
             ');
             $stmt->execute([$quantity, $productId]);
 
-            // COMMIT: rendi permanenti tutte le modifiche E rilascia il blocco.
-            // Solo a questo punto il secondo cliente può leggere la riga.
+            // Crea l'ordine — nella STESSA transazione
+            $stmt = $this->pdo->prepare(
+                'INSERT INTO orders (product_id, quantity, total_price, status)
+                VALUES (?, ?, ?, ?)
+                RETURNING *'
+            );
+            $stmt->execute([$productId, $quantity, $totalPrice, 'confirmed']);
+            $order = $stmt->fetch();
+
+            // Scrivi nell'outbox — nella STESSA transazione
+            // Questo è il cuore del Transactional Outbox Pattern.
+            // Non inviamo il messaggio a RabbitMQ ora (potrebbe fallire).
+            // Lo "parcheggiamo" nel database, che è affidabile.
+            // Il relay lo invierà a RabbitMQ dopo.
+            $outboxPayload = [
+                'order_id' => $order['id'],
+                'product_id' => $productId,
+                'quantity' => $quantity,
+                'total_price' => $totalPrice,
+                'event' => 'order_confirmed'
+            ];
+
+            $stmt = $this->pdo->prepare(
+                'INSERT INTO outbox (event_type, payload)
+                VALUES (?, ?)'
+            );
+            $stmt->execute([
+                'order_confirmed',
+                json_encode($outboxPayload)
+            ]);
+
+            // COMMIT: tutto è andato bene.
+            // Stock scalato + ordine creato + outbox scritto.
+            // Se una qualsiasi delle operazioni sopra fosse fallita,
+            // il catch avrebbe fatto rollBack e NIENTE sarebbe stato salvato.
             $this->pdo->commit();
 
             return [
                 'success' => true,
+                'order' => $order,
                 'product' => $product,
-                'remaining_stock' => (int) $product['stock'] - $quantity
             ];
 
         } catch (\Exception $e) {

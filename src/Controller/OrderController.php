@@ -72,23 +72,17 @@ class OrderController
             );
         }
 
-        // === STEP 4: Riserva lo stock in modo atomico ===
-        $inventoryService = new InventoryService($pdo);
-        $reservation = $inventoryService->reserveStock($productId, $quantity);
-
-        if (!$reservation['success']) {
-            return $this->jsonError($response, $reservation['error'], 409);
-        }
-
+        // === STEP 4: Riserva stock + crea ordine + outbox (transazione atomica) ===
         $totalPrice = bcmul((string) $product['price'], (string) $quantity, 2);
 
-        $stmt = $pdo->prepare(
-            'INSERT INTO orders (product_id, quantity, total_price, status)
-             VALUES (?, ?, ?, ?)
-             RETURNING *'
-        );
-        $stmt->execute([$productId, $quantity, $totalPrice, 'confirmed']);
-        $order = $stmt->fetch();
+        $inventoryService = new InventoryService($pdo);
+        $result = $inventoryService->reserveAndCreateOrder($productId, $quantity, $totalPrice);
+
+        if (!$result['success']) {
+            return $this->jsonError($response, $result['error'], 409);
+        }
+
+        $order = $result['order'];
 
         $responseData = [
             'order' => [
