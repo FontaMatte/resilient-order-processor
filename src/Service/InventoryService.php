@@ -21,7 +21,8 @@ class InventoryService
     public function reserveAndCreateOrder(
         int $productId, 
         int $quantity,
-        string $totalPrice
+        string $totalPrice,
+        ?string $idempotencyKey = null
     ): array
     {
         try {
@@ -79,11 +80,11 @@ class InventoryService
 
             // Crea l'ordine — nella STESSA transazione
             $stmt = $this->pdo->prepare(
-                'INSERT INTO orders (product_id, quantity, total_price, status)
-                VALUES (?, ?, ?, ?)
+                'INSERT INTO orders (product_id, quantity, total_price, status, idempotency_key)
+                VALUES (?, ?, ?, ?, ?)
                 RETURNING *'
             );
-            $stmt->execute([$productId, $quantity, $totalPrice, 'confirmed']);
+            $stmt->execute([$productId, $quantity, $totalPrice, 'confirmed', $idempotencyKey]);
             $order = $stmt->fetch();
 
             // Scrivi nell'outbox — nella STESSA transazione
