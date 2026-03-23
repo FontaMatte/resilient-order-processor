@@ -9,6 +9,7 @@ use Psr\Http\Message\ResponseInterface as Response;
 use Psr\Http\Message\ServerRequestInterface as Request;
 use App\Service\Database;
 use App\Controller\OrderController;
+use App\Service\QueueService;
 
 $app = AppFactory::create();
 $app->addErrorMiddleware(true, true, true);
@@ -17,7 +18,16 @@ $app->addBodyParsingMiddleware();
 // Health check
 $app->get('/health', function (Request $request, Response $response): Response {
     $dbHealthy = Database::isHealthy();
-    $allHealthy = $dbHealthy;
+
+    $queueService = new QueueService(
+        host: getenv('RABBITMQ_HOST') ?: 'rabbitmq',
+        port: (int) (getenv('RABBITMQ_PORT') ?: 5672),
+        user: getenv('RABBITMQ_USER') ?: 'guest',
+        password: getenv('RABBITMQ_PASSWORD') ?: 'guest'
+    );
+    $rabbitHealthy = $queueService->isHealthy();
+
+    $allHealthy = $dbHealthy && $rabbitHealthy;
 
     $data = [
         'status' => $allHealthy ? 'ok' : 'degraded',
@@ -25,7 +35,7 @@ $app->get('/health', function (Request $request, Response $response): Response {
         'service' => 'resilient-order-processor',
         'checks' => [
             'database' => $dbHealthy ? 'ok' : 'failing',
-            'rabbitmq' => 'not_checked',
+            'rabbitmq' => $rabbitHealthy ? 'ok' : 'failing',
         ]
     ];
 
