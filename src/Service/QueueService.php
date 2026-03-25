@@ -32,7 +32,9 @@ class QueueService
 {
     private ?AMQPStreamConnection $connection = null;
     private ?AMQPChannel $channel = null;
+
     public const QUEUE_PAYMENTS = 'order_payments';
+    public const QUEUE_PAYMENTS_DLQ = 'order_payments_dlq';
 
     public function __construct(
         private string $host = 'rabbitmq',
@@ -75,6 +77,14 @@ class QueueService
                 false,   // exclusive
                 false    // auto_delete
             );
+
+            $this->channel->queue_declare(
+                self::QUEUE_PAYMENTS_DLQ,
+                false,
+                true,
+                false,
+                false
+            );
         }
 
         return $this->channel;
@@ -107,6 +117,21 @@ class QueueService
         //   - exchange ('' = default exchange, che manda direttamente alla coda)
         //   - routing_key = nome della coda di destinazione
         $channel->basic_publish($message, '', self::QUEUE_PAYMENTS);
+    }
+
+    public function publishToDeadLetter(array $data): void
+    {
+        $channel = $this->getChannel();
+
+        $message = new AMQPMessage(
+            json_encode($data),
+            [
+                'delivery_mode' => AMQPMessage::DELIVERY_MODE_PERSISTENT,
+                'content_type' => 'application/json'
+            ]
+        );
+
+        $channel->basic_publish($message, '', self::QUEUE_PAYMENTS_DLQ);
     }
 
     /**

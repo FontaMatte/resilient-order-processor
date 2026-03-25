@@ -17,6 +17,8 @@ use PDO;
  */
 class PaymentProcessor
 {
+    private const MAX_RETRIES = 3;
+
     public function __construct(
         private PDO $pdo,
         private QueueService $queueService,
@@ -77,8 +79,12 @@ class PaymentProcessor
     {
         $payload = json_decode($msg->getBody(), true);
         $orderId = $payload['order_id'] ?? 'unknown';
+        $retryCount = $payload['retry_count'] ?? 0;
 
-        error_log(sprintf('[PAYMENT] Processing payment for order %s...', $orderId));
+        error_log(sprintf(
+            '[PAYMENT] Processing payment for order %s (attempt %d/%d)...',
+            $orderId, $retryCount + 1, self::MAX_RETRIES
+        ));
 
         try {
             // Simula il tempo di processamento (come una vera chiamata a Stripe)
@@ -90,18 +96,17 @@ class PaymentProcessor
             if ($success) {
                 $this->updateOrderStatus($orderId, 'completed');
                 error_log(sprintf('[PAYMENT] Order %s completed successfully', $orderId));
+                // ACK: "ho processato il messaggio, puoi cancellarlo".
+                // Questo è il momento critico: facciamo ack SOLO dopo aver aggiornato
+                // il database. Se il processo crolla PRIMA di questa riga,
+                // RabbitMQ rimette il messaggio in coda → verrà riprocessato.
+                // Se crolla DOPO, il messaggio è stato cancellato ma l'ordine
+                // è già aggiornato → tutto ok.
+                $msg->ack();
             } else {
-                $this->updateOrderStatus($orderId, 'failed', 'Payment declined by provider');
-                error_log(sprintf('[PAYMENT] Order %s payment failed', $orderId));
+                // Pagamento fallito — decidi se ritentare o mandare in DLQ
+                $this->handleFailure($msg, $payload, $orderId, $retryCount);
             }
-
-            // ACK: "ho processato il messaggio, puoi cancellarlo".
-            // Questo è il momento critico: facciamo ack SOLO dopo aver aggiornato
-            // il database. Se il processo crolla PRIMA di questa riga,
-            // RabbitMQ rimette il messaggio in coda → verrà riprocessato.
-            // Se crolla DOPO, il messaggio è stato cancellato ma l'ordine
-            // è già aggiornato → tutto ok.
-            $msg->ack();
 
         } catch (\Exception $e) {
             error_log(sprintf(
@@ -110,14 +115,43 @@ class PaymentProcessor
                 $e->getMessage()
             ));
 
-            // NACK: "non sono riuscito a processare il messaggio".
-            // Il terzo parametro (true) dice a RabbitMQ: "rimettilo in coda".
-            // Così verrà riconsegnato per un nuovo tentativo.
-            // In un sistema più avanzato, dopo N tentativi falliti
-            // manderesti il messaggio in una "dead letter queue" (coda dei messaggi
-            // impossibili da processare) per analisi manuale.
-            $msg->nack(false, true);
+            // Errore inatteso — stessa logica di retry/DLQ
+            $this->handleFailure($msg, $payload, $orderId, $retryCount);
         }
+    }
+
+    private function handleFailure($msg, array $payload, string $orderId, int $retryCount)
+    {
+        if ($retryCount < self::MAX_RETRIES - 1) {
+            // Ancora tentativi disponibili: ripubblica con retry_count incrementato
+            $payload['retry_count'] = $retryCount + 1;
+            $this->queueService->publishPayment($payload);
+
+            error_log(sprintf(
+                '[PAYMENT] Order %s failed, requeued (attempt %d/%d)',
+                $orderId, $retryCount + 1, self::MAX_RETRIES
+            ));
+
+        } else {
+            // Tentativi esauriti: sposta in Dead Letter Queue
+            $payload['failed_at'] = date('c');
+            $payload['final_error'] = 'Payment declined by provider after ' . self::MAX_RETRIES . ' attempts';
+            $this->queueService->publishToDeadLetter($payload);
+
+            $this->updateOrderStatus(
+                $orderId,
+                'failed',
+                'Payment failed after ' . self::MAX_RETRIES . ' attempts. Moved to DLQ.'
+            );
+
+            error_log(sprintf(
+                '[PAYMENT] Order %s moved to DLQ after %d failed attempts',
+                $orderId, self::MAX_RETRIES
+            ));
+        }
+
+        // Ack l'originale: lo abbiamo gestito (ripubblicato o spostato in DLQ)
+        $msg->ack();
     }
 
     /**
