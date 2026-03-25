@@ -10,10 +10,14 @@ use Psr\Http\Message\ServerRequestInterface as Request;
 use App\Service\Database;
 use App\Controller\OrderController;
 use App\Service\QueueService;
+use App\Middleware\RateLimitMiddleware;
 
 $app = AppFactory::create();
 $app->addErrorMiddleware(true, true, true);
 $app->addBodyParsingMiddleware();
+
+// Rate limiting: max 30 richieste al minuto per IP
+$app->add(new RateLimitMiddleware(maxRequests: 30, windowSeconds: 60));
 
 // Health check
 $app->get('/health', function (Request $request, Response $response): Response {
