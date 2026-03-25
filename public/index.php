@@ -64,4 +64,40 @@ $app->get('/products', function (Request $request, Response $response): Response
 // Crea ordine
 $app->post('/orders', [new OrderController(), 'create']);
 
+$app->get('/orders/{id}', function (Request $request, Response $response, array $args): Response {
+    $pdo = Database::getConnection();
+
+    $stmt = $pdo->prepare(
+        'SELECT o.*, p.name as product_name 
+        FROM orders o 
+        JOIN products p ON o.product_id = p.id 
+        WHERE o.id = ?'
+    );
+    $stmt->execute([$args['id']]);
+    $order = $stmt->fetch();
+
+    if ($order === false) {
+        $data = ['error' => ['message' => 'Order not found', 'code' => 404]];
+        $response->getBody()->write(json_encode($data, JSON_PRETTY_PRINT));
+        return $response->withHeader('Content-Type', 'application/json')->withStatus(404);
+    }
+
+    $data = [
+        'order' => [
+            'id' => $order['id'],
+            'product_id' => (int) $order['product_id'],
+            'product_name' => $order['product_name'],
+            'quantity' => (int) $order['quantity'],
+            'total_price' => $order['total_price'],
+            'status' => $order['status'],
+            'failure_reason' => $order['failure_reason'],
+            'created_at' => $order['created_at'],
+            'updated_at' => $order['updated_at'],
+        ]
+    ];
+
+    $response->getBody()->write(json_encode($data, JSON_PRETTY_PRINT));
+    return $response->withHeader('Content-Type', 'application/json')->withStatus(200);
+});
+
 $app->run();
