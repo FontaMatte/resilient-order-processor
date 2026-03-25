@@ -12,9 +12,13 @@ use Psr\Http\Message\ServerRequestInterface as Request;
 use App\Service\ExternalAvailabilityService;
 use App\Service\ExternalServiceException;
 use App\Service\RetryService;
+use App\Service\CircuitBreaker;
+use App\Service\CircuitBreakerOpenException;
 
 class OrderController
 {
+    private static ?CircuitBreaker $circuitBreaker = null;
+
     public function create(Request $request, Response $response): Response
     {
         $body = $request->getParsedBody();
@@ -91,20 +95,32 @@ class OrderController
             return $this->jsonError($response, "Product with id {$productId} not found", 404);
         }
 
-        // === STEP 3: Verifica disponibilità con servizio esterno + retry ===
+        // === STEP 3: Verifica disponibilità con circuit breaker + retry ===
+        if (self::$circuitBreaker === null) {
+            self::$circuitBreaker = new CircuitBreaker(failureThreshold: 5, recoveryTimeout: 30.0);
+        }
+
         $availabilityService = new ExternalAvailabilityService(failureRate: 0.3);
         $retryService = new RetryService(maxAttempts: 3, baseDelayMs: 200);
 
         try {
-            $availability = $retryService->execute(
-                operation: fn() => $availabilityService->checkAvailability($productId, $quantity),
-                operationName: 'availability_check'
+            $availability = self::$circuitBreaker->execute(
+                fn() => $retryService->execute(
+                    operation: fn() => $availabilityService->checkAvailability($productId, $quantity),
+                    operationName: 'availability_check'
+                )
             );
 
             if (!$availability['available']) {
                 return $this->jsonError($response, 'Product not available in requested quantity', 409);
             }
             
+        } catch (CircuitBreakerOpenException $e) {
+            return $this->jsonError(
+                $response,
+                'Service temporarily unavailable (circuit breaker open). Please try again later.',
+                503
+            );
         } catch (ExternalServiceException $e) {
             return $this->jsonError(
                 $response,
