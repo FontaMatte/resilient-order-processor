@@ -28,4 +28,4 @@ $queueService = new QueueService(
 );
 
 $relay = new OutboxRelay($pdo, $queueService);
-$relay->run(intervalSeconds: 2);
+$relay->run();

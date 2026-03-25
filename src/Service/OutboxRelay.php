@@ -90,26 +90,58 @@ class OutboxRelay
     }
 
     /**
-     * Avvia il relay in un loop infinito.
+     * Avvia il relay con LISTEN/NOTIFY + polling di fallback.
      *
-     * @param int $intervalSeconds Secondi di attesa tra un ciclo e l'altro
+     * Il relay ascolta le notifiche PostgreSQL per reagire in tempo reale.
+     * Ogni 5 secondi fa comunque un poll di sicurezza per catturare
+     * eventuali messaggi persi (se una notifica non arriva per qualsiasi motivo).
+     *
+     * @param int $fallbackIntervalSeconds Secondi tra un poll di fallback e l'altro
      */
-    public function run(int $intervalSeconds = 2): void
+    public function run(int $fallbackIntervalSeconds = 5): void
     {
-        error_log('[OUTBOX] Relay started. Polling every ' . $intervalSeconds . 's...');
+        // Registra l'ascolto sul canale PostgreSQL.
+        // LISTEN è un comando SQL: dice a PostgreSQL "avvisami quando qualcuno
+        // fa NOTIFY su questo canale".
+        $this->pdo->exec('LISTEN new_outbox_message');
+
+        error_log('[OUTBOX] Relay started with LISTEN/NOTIFY. Fallback poll every ' . $fallbackIntervalSeconds . 's...');
+
+        // Processa eventuali messaggi già presenti all'avvio
+        $this->processOutbox();
+
+        $lastPollTime = time();
 
         while (true) {
-            $processed = $this->processOutbox();
 
-            if ($processed > 0) {
-                error_log(sprintf('[OUTBOX] Processed %d messages', $processed));
+            // pdo_pgsql ha un metodo specifico per controllare le notifiche.
+            // pgsqlGetNotify() controlla se ci sono notifiche pendenti.
+            // Il parametro è il timeout in millisecondi:
+            //   - 0 = non bloccare, controlla e basta
+            //   - 1000 = aspetta fino a 1 secondo
+            // Usiamo 1000ms così non facciamo busy-waiting (loop continuo senza pausa).
+            $notification = $this->pdo->pgsqlGetNotify(PDO::FETCH_ASSOC, 1000);
+
+            if ($notification !== false) {
+                // Notifica ricevuta! Processa immediatamente.
+                error_log(sprintf(
+                    '[OUTBOX] Notification received (message id: %s). Processing...',
+                    $notification['payload'] ?? 'unknown'
+                ));
+                $this->processOutbox();
+                $lastPollTime = time();
             }
 
-            // Aspetta prima del prossimo ciclo.
-            // sleep() blocca il processo per N secondi.
-            // In un sistema più avanzato useresti un event loop
-            // o un meccanismo di notifica (PostgreSQL LISTEN/NOTIFY).
-            sleep($intervalSeconds);
+            // Poll di fallback: ogni N secondi, controlla comunque il database.
+            // Difesa in profondità: se una notifica si perde (raro ma possibile
+            // in caso di problemi di connessione), il polling la recupera.
+            if (time() - $lastPollTime >= $fallbackIntervalSeconds) {
+                $processed = $this->processOutbox();
+                if ($processed > 0) {
+                    error_log(sprintf('[OUTBOX] Fallback poll: processed %d messages', $processed));
+                }
+                $lastPollTime = time();
+            }
         }
     }
 }
