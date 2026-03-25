@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Service;
 
 use Exception;
+use App\Service\Logger;
 
 class RetryService
 {
@@ -24,10 +25,11 @@ class RetryService
                 $result = $operation();
 
                 if ($attempt > 1) {
-                    error_log(sprintf(
-                        '[RETRY] %s succeeded on attempt %d/%d',
-                        $operationName, $attempt, $this->maxAttempts
-                    ));
+                    Logger::getInstance()->info('Operation succeeded after retry', [
+                        'operation' => $operationName,
+                        'attempt' => $attempt,
+                        'max_attempts' => $this->maxAttempts,
+                    ]);
                 }
 
                 return $result;
@@ -36,19 +38,23 @@ class RetryService
                 $lastException = $e;
 
                 if ($attempt === $this->maxAttempts) {
-                    error_log(sprintf(
-                        '[RETRY] %s FAILED after %d attempts. Last error: %s',
-                        $operationName, $this->maxAttempts, $e->getMessage()
-                    ));
+                    Logger::getInstance()->error('Operation failed after all attempts', [
+                        'operation' => $operationName,
+                        'attempts_made' => $this->maxAttempts,
+                        'last_error' => $e->getMessage(),
+                    ]);
                     break;
                 }
 
                 $delay = $this->calculateDelay($attempt);
 
-                error_log(sprintf(
-                    '[RETRY] %s attempt %d/%d failed (%s). Retrying in %dms...',
-                    $operationName, $attempt, $this->maxAttempts, $e->getMessage(), $delay
-                ));
+                Logger::getInstance()->warning('Retry attempt failed', [
+                    'operation' => $operationName,
+                    'attempt' => $attempt,
+                    'max_attempts' => $this->maxAttempts,
+                    'error' => $e->getMessage(),
+                    'retry_delay_ms' => $delay,
+                ]);
 
                 usleep($delay * 1000);
             }
