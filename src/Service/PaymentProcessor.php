@@ -86,6 +86,30 @@ class PaymentProcessor
             $orderId, $retryCount + 1, self::MAX_RETRIES
         ));
 
+        // === CHECK IDEMPOTENZA ===
+        // Controlla se l'ordine è già stato processato.
+        // Questo protegge dal caso in cui il worker crashi dopo aver
+        // aggiornato il DB ma prima dell'ack: RabbitMQ riconsegna il messaggio,
+        // ma noi riconosciamo che il lavoro è già stato fatto.
+        $stmt = $this->pdo->prepare('SELECT status FROM orders WHERE id = ?');
+        $stmt->execute([$orderId]);
+        $order = $stmt->fetch();
+
+        if ($order === false) {
+            error_log(sprintf('[PAYMENT] Order %s not found in DB. Discarding message.', $orderId));
+            $msg->ack();
+            return;
+        }
+
+        if (in_array($order['status'], ['completed', 'failed'], true)) {
+            error_log(sprintf(
+                '[PAYMENT] Order %s already %s. Skipping (idempotent).',
+                $orderId, $order['status']
+            ));
+            $msg->ack();
+            return;
+        }
+
         try {
             // Simula il tempo di processamento (come una vera chiamata a Stripe)
             usleep(random_int(100, 500) * 1000);
