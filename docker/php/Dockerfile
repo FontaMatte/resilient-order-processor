@@ -21,7 +21,7 @@ RUN apt-get update && apt-get install -y \
 #   - pdo_pgsql: il driver PDO specifico per PostgreSQL
 #   - sockets: per la comunicazione di rete con RabbitMQ
 #   - bcmath: per calcoli precisi su numeri decimali (prezzi, soldi)
-RUN docker-php-ext-install pdo pdo_pgsql sockets bcmath
+RUN docker-php-ext-install pdo pdo_pgsql sockets bcmath pcntl
 
 # Installiamo Composer scaricandolo direttamente.
 # Il metodo "COPY --from=composer:2" a volte rompe perché il percorso

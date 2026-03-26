@@ -18,12 +18,26 @@ use PDO;
 class PaymentProcessor
 {
     private const MAX_RETRIES = 3;
+    private bool $shouldStop = false;
 
     public function __construct(
         private PDO $pdo,
         private QueueService $queueService,
         private float $successRate = 0.9
     ) {}
+
+    private function registerSignalHandlers(): void
+    {
+        pcntl_signal(SIGINT, function () {
+            error_log('[PAYMENT] Received SIGINT. Finishing current message and shutting down...');
+            $this->shouldStop = true;
+        });
+
+        pcntl_signal(SIGTERM, function () {
+            error_log('[PAYMENT] Received SIGTERM. Finishing current message and shutting down...');
+            $this->shouldStop = true;
+        });
+    }
 
     /**
      * Avvia il consumer: ascolta la coda e processa i messaggi.
@@ -37,7 +51,9 @@ class PaymentProcessor
     {
         $channel = $this->queueService->getChannel();
 
-        error_log('[PAYMENT] Worker started. Waiting for messages...');
+        $this->registerSignalHandlers();
+
+        error_log('[PAYMENT] Worker started. Waiting for messages... (Ctrl+C for graceful shutdown)');
 
         // basic_consume registra una "callback" sulla coda.
         // Quando arriva un messaggio, RabbitMQ chiama la nostra funzione.
@@ -67,8 +83,23 @@ class PaymentProcessor
         // wait() blocca il processo e aspetta messaggi.
         // Il ciclo while gira finché il canale ha consumer attivi.
         while ($channel->is_consuming()) {
-            $channel->wait();
+            pcntl_signal_dispatch();
+
+            if ($this->shouldStop) {
+                error_log('[PAYMENT] Graceful shutdown complete.');
+                $channel->close();
+                break;
+            }
+
+            try {
+                $channel->wait(null, false, 1);
+            } catch (\PhpAmqpLib\Exception\AMQPTimeoutException) {
+                // Nessun messaggio in 1 secondo, torna nel loop
+            }
         }
+
+        $this->queueService->close();
+        error_log('[PAYMENT] Worker stopped.');
     }
 
 
