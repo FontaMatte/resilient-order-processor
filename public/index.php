@@ -69,6 +69,25 @@ $app->get('/products', function (Request $request, Response $response): Response
 // Crea ordine
 $app->post('/orders', [new OrderController(), 'create']);
 
+$app->get('/orders/list', function (Request $request, Response $response): Response {
+    $pdo = Database::getConnection();
+    $stmt = $pdo->prepare(
+        'SELECT o.*, p.name as product_name
+         FROM orders o
+         JOIN products p ON o.product_id = p.id
+         ORDER BY o.created_at DESC
+         LIMIT 20'
+    );
+    $stmt->execute();
+    $orders = $stmt->fetchAll();
+
+    $response->getBody()->write(json_encode(['orders' => $orders], JSON_PRETTY_PRINT));
+
+    return $response
+        ->withHeader('Content-Type', 'application/json')
+        ->withStatus(200);
+});
+
 $app->get('/orders/{id}', function (Request $request, Response $response, array $args): Response {
     $pdo = Database::getConnection();
 
