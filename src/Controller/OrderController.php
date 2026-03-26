@@ -14,6 +14,7 @@ use App\Service\ExternalServiceException;
 use App\Service\RetryService;
 use App\Service\CircuitBreaker;
 use App\Service\CircuitBreakerOpenException;
+use App\Service\Metrics;
 
 class OrderController
 {
@@ -21,6 +22,8 @@ class OrderController
 
     public function create(Request $request, Response $response): Response
     {
+        $startTime = microtime(true);
+
         $body = $request->getParsedBody();
 
         if (!is_array($body)) {
@@ -116,12 +119,14 @@ class OrderController
             }
             
         } catch (CircuitBreakerOpenException $e) {
+            Metrics::increment('orders_failed_circuit_breaker');
             return $this->jsonError(
                 $response,
                 'Service temporarily unavailable (circuit breaker open). Please try again later.',
                 503
             );
         } catch (ExternalServiceException $e) {
+            Metrics::increment('orders_failed_availability');
             return $this->jsonError(
                 $response,
                 'Unable to verify product availability. Please try again later.',
@@ -136,6 +141,7 @@ class OrderController
         $result = $inventoryService->reserveAndCreateOrder($productId, $quantity, $totalPrice, $idempotencyKey);
 
         if (!$result['success']) {
+            Metrics::increment('orders_failed_stock');
             return $this->jsonError($response, $result['error'], 409);
         }
 
@@ -154,6 +160,11 @@ class OrderController
         ];
 
         $response->getBody()->write(json_encode($responseData, JSON_PRETTY_PRINT));
+
+        // Metriche
+        $elapsed = (microtime(true) - $startTime) * 1000;
+        Metrics::increment('orders_created');
+        Metrics::timing('order_creation_time', $elapsed);
 
         return $response
             ->withHeader('Content-Type', 'application/json')

@@ -11,6 +11,7 @@ use App\Service\Database;
 use App\Controller\OrderController;
 use App\Service\QueueService;
 use App\Middleware\RateLimitMiddleware;
+use App\Service\Metrics;
 
 $app = AppFactory::create();
 $app->addErrorMiddleware(true, true, true);
@@ -102,6 +103,16 @@ $app->get('/orders/{id}', function (Request $request, Response $response, array 
 
     $response->getBody()->write(json_encode($data, JSON_PRETTY_PRINT));
     return $response->withHeader('Content-Type', 'application/json')->withStatus(200);
+});
+
+$app->get('/metrics', function (Request $request, Response $response): Response {
+    $metrics = Metrics::getAll();
+
+    $response->getBody()->write(json_encode($metrics, JSON_PRETTY_PRINT));
+
+    return $response
+        ->withHeader('Content-Type', 'application/json')
+        ->withStatus(200);
 });
 
 $app->run();
